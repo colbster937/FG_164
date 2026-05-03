@@ -11,9 +11,9 @@ buildscript {
 
 plugins {
   id("java")
-  id("org.jetbrains.kotlin.jvm") version "1.9.23"
   id("idea")
   id("eclipse")
+  kotlin("jvm") version "1.9.23"
   `maven-publish`
   `java-gradle-plugin`
 }
@@ -26,7 +26,7 @@ if (jdk != JavaVersion.VERSION_1_8) {
 group = "net.minecraftforge.gradle"
 version = "1.0-SNAPSHOT"
 
-println("Version $version")
+//println("Version $version")
 
 base {
   archivesBaseName = "ForgeGradle"
@@ -41,27 +41,16 @@ java {
 repositories {
   maven("https://maven.minecraftforge.net/")
   mavenCentral()
-}
-
-tasks.jar {
-  manifest {
-    attributes(
-      mapOf(
-        "version" to project.version,
-        "javaCompliance" to project.java.targetCompatibility,
-        "group" to project.group
-      )
-    )
-  }
+  mavenLocal()
 }
 
 dependencies {
   implementation(gradleApi())
   implementation(gradleKotlinDsl())
 
-  implementation("org.ow2.asm:asm:9.6")
-  implementation("org.ow2.asm:asm-commons:9.6")
-  implementation("org.ow2.asm:asm-tree:9.6")
+  implementation("org.ow2.asm:asm:7.3.1")
+  implementation("org.ow2.asm:asm-commons:7.3.1")
+  implementation("org.ow2.asm:asm-tree:7.3.1")
   implementation("net.sourceforge.argo:argo:3.4")
   implementation("net.sf.opencsv:opencsv:2.3")
   implementation("com.cloudbees:diff4j:1.1")
@@ -72,7 +61,7 @@ dependencies {
   implementation("com.google.code.gson:gson:2.2.4")
   implementation("com.github.tony19:named-regexp:0.2.3")
 
-  implementation("net.md-5:SpecialSource:1.6.1")
+  implementation("net.md-5:SpecialSource:1.11.2")
 
   implementation("de.oceanlabs.mcp:RetroGuard:3.6.6")
   implementation("de.oceanlabs.mcp:mcinjector:3.1")
@@ -122,6 +111,18 @@ publishing {
         }
       }
     }
+  }
+}
+
+tasks.jar {
+  manifest {
+    attributes(
+      mapOf(
+        "version" to project.version,
+        "javaCompliance" to project.java.targetCompatibility,
+        "group" to project.group
+      )
+    )
   }
 }
 

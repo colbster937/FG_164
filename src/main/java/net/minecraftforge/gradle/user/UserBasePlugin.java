@@ -490,7 +490,12 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
                 try
                 {
                     File jar = ((ProcessJarTask) project.getTasks().getByName("deobfBinJar")).getOutJar();
-                    patchCoreModManager(jar);
+                    File patched = new File(project.getBuildDir(), jar.getName().replace(".jar", "-patched.jar"));
+                    if (!patched.exists())
+                    {
+                        Files.copy(jar, patched);
+                        patchCoreModManager(patched);
+                    }
                 }
                 catch (Exception e)
                 {
@@ -1100,9 +1105,10 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
         doSourceReplacement();
 
         final File deobfOut = ((ProcessJarTask) project.getTasks().getByName("deobfBinJar")).getOutJar();
+        final File patchedOut = new File(project.getBuildDir(), deobfOut.getName().replace(".jar", "-patched.jar"));
 
         // add dependency
-        project.getDependencies().add(CONFIG, project.files(deobfOut));
+        project.getDependencies().add(CONFIG, project.files(patchedOut));
 
         // link sources and javadocs eclipse
         EclipseModel eclipseConv = (EclipseModel) project.getExtensions().getByName("eclipse");

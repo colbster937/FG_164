@@ -18,7 +18,7 @@ import net.md_5.specialsource.AccessMap;
 import net.md_5.specialsource.Jar;
 import net.md_5.specialsource.JarMapping;
 import net.md_5.specialsource.JarRemapper;
-import net.md_5.specialsource.RemapperPreprocessor;
+import net.md_5.specialsource.RemapperProcessor;
 import net.md_5.specialsource.provider.JarProvider;
 import net.md_5.specialsource.provider.JointProvider;
 import net.minecraftforge.gradle.common.Constants;
@@ -134,7 +134,7 @@ public class ProcessJarTask extends CachedTask
         }
 
         // make a processor out of the ATS and mappings.
-        RemapperPreprocessor processor = new RemapperPreprocessor(null, mapping, accessMap);
+        RemapperProcessor processor = new RemapperProcessor(null, mapping, accessMap);
 
         // make remapper
         JarRemapper remapper = new JarRemapper(processor, mapping);

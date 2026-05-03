@@ -21,6 +21,8 @@ import org.gradle.api.tasks.TaskAction;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -138,7 +140,7 @@ public class MergeMappingsTask extends CachedTask
         Properties mappingsOut = new Properties();
 
         // Try to load the mappings
-        mappings.load(Files.newInputStreamSupplier(inExc).getInput());
+        mappings.load(new FileInputStream(inExc));
 
         for (Map.Entry<Object, Object> entry : mappings.entrySet())
         {
@@ -182,7 +184,7 @@ public class MergeMappingsTask extends CachedTask
             mappingsOut.setProperty(newKey, Joiner.on('|').join(exceptionsAndParams));
         }
 
-        mappingsOut.store(Files.newOutputStreamSupplier(outExc).getOutput(), "");
+        mappingsOut.store(new FileOutputStream(outExc), "");
     }
 
     private void fixPatch(File patch, File outPatch) throws IOException
