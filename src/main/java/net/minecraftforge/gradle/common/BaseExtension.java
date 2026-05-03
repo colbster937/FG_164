@@ -9,6 +9,8 @@ public class BaseExtension
     protected Project project;
     protected String version = "null";
     protected String mcpVersion = "unknown";
+    protected String clientHash = "null";
+    protected String serverHash = "null";
     protected String assetDir = "eclipse/assets";
     private LinkedList<String> srgExtra = new LinkedList<String>();
 
@@ -35,6 +37,26 @@ public class BaseExtension
     public void setMcpVersion(String mcpVersion)
     {
         this.mcpVersion = mcpVersion;
+    }
+
+    public String getClientHash()
+    {
+        return clientHash;
+    }
+
+    public void setClientHash(String clientHash)
+    {
+        this.clientHash = clientHash;
+    }
+
+    public String getServerHash()
+    {
+        return serverHash;
+    }
+
+    public void setServerHash(String serverHash)
+    {
+        this.serverHash = serverHash;
     }
 
     public void setAssetDir(String value)

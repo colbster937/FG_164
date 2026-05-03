@@ -16,6 +16,7 @@ import static net.minecraftforge.gradle.user.UserConstants.MCP_PATCH;
 import static net.minecraftforge.gradle.user.UserConstants.MERGE_CFG;
 import static net.minecraftforge.gradle.user.UserConstants.METHOD_CSV;
 import static net.minecraftforge.gradle.user.UserConstants.NATIVES_DIR;
+import static net.minecraftforge.gradle.user.UserConstants.NATIVES_DIR_ARM64;
 import static net.minecraftforge.gradle.user.UserConstants.PACKAGED_EXC;
 import static net.minecraftforge.gradle.user.UserConstants.PACKAGED_SRG;
 import static net.minecraftforge.gradle.user.UserConstants.PACK_DIR;
@@ -31,9 +32,21 @@ import groovy.xml.XmlUtil;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import static java.net.HttpURLConnection.HTTP_MOVED_PERM;
+import static java.net.HttpURLConnection.HTTP_MOVED_TEMP;
+import java.net.URL;
 import java.nio.charset.Charset;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.util.Arrays;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.jar.JarOutputStream;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -42,6 +55,14 @@ import javax.xml.transform.Transformer;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
+
+import javassist.CannotCompileException;
+import javassist.ClassPool;
+import javassist.CtClass;
+import javassist.CtMethod;
+import javassist.CtNewMethod;
+import javassist.expr.ExprEditor;
+import javassist.expr.MethodCall;
 
 import net.minecraftforge.gradle.common.BasePlugin;
 import net.minecraftforge.gradle.common.Constants;
@@ -68,17 +89,18 @@ import org.gradle.api.artifacts.Configuration;
 import org.gradle.api.artifacts.Configuration.State;
 import org.gradle.api.artifacts.dsl.DependencyHandler;
 import org.gradle.api.execution.TaskExecutionGraph;
+import org.gradle.api.file.FileCollection;
 import org.gradle.api.internal.plugins.DslObject;
 import org.gradle.api.logging.Logger;
 import org.gradle.api.plugins.JavaPluginConvention;
 import org.gradle.api.tasks.GroovySourceSet;
+import org.gradle.api.tasks.JavaExec;
 import org.gradle.api.tasks.ScalaSourceSet;
 import org.gradle.api.tasks.SourceSet;
 import org.gradle.api.tasks.compile.GroovyCompile;
 import org.gradle.api.tasks.compile.JavaCompile;
 import org.gradle.api.tasks.javadoc.Javadoc;
 import org.gradle.api.tasks.scala.ScalaCompile;
-import org.gradle.listener.ActionBroadcast;
 import org.gradle.plugins.ide.eclipse.model.Classpath;
 import org.gradle.plugins.ide.eclipse.model.ClasspathEntry;
 import org.gradle.plugins.ide.eclipse.model.EclipseModel;
@@ -95,6 +117,7 @@ import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
 import com.google.common.base.Throwables;
+import com.google.common.io.ByteStreams;
 import com.google.common.io.Files;
 
 public abstract class UserBasePlugin extends BasePlugin<UserExtension>
@@ -106,7 +129,7 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
     public void applyPlugin()
     {
         this.applyExternalPlugin("java");
-        this.applyExternalPlugin("maven");
+        this.applyExternalPlugin("maven-publish");
         this.applyExternalPlugin("eclipse");
         this.applyExternalPlugin("idea");
 
@@ -125,7 +148,7 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
         task.setGroup("ForgeGradle");
 
         task = makeTask("setupDevWorkspace", DefaultTask.class);
-        task.dependsOn("genSrgs", "deobfBinJar", "copyAssets", "extractNatives");
+        task.dependsOn("genSrgs", "deobfBinJar", "patchForgeJava8", "copyAssets", "extractNatives");
         task.setGroup("ForgeGradle");
 
         task = makeTask("setupDecompWorkspace", DefaultTask.class);
@@ -134,7 +157,7 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
 
         project.getTasks().getByName("eclipseClasspath").dependsOn("setupDevWorkspace");
         project.getTasks().getByName("reobf").dependsOn("genSrgs");
-        project.getTasks().getByName("compileJava").dependsOn("deobfBinJar");
+        project.getTasks().getByName("compileJava").dependsOn("deobfBinJar", "patchForgeJava8");
         project.getTasks().getByName("compileApiJava").dependsOn("deobfBinJar");
         
         // stop people screwing stuff up.
@@ -167,6 +190,242 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
                 return call();
             }
         });
+
+        addRunTasks();
+    }
+
+    private void addRunTasks()
+    {
+        DefaultTask copyTask = makeTask("copyModsToRun", DefaultTask.class);
+        copyTask.setGroup("ForgeGradle");
+        copyTask.dependsOn("jar");
+        copyTask.doLast(new Action<Task>() {
+            @Override
+            public void execute(Task task)
+            {
+                File modsDir = new File(project.getProjectDir(), "run/mods");
+                modsDir.mkdirs();
+                File jar = project.getTasks().getByName("jar").getOutputs().getFiles().getSingleFile();
+                try {
+                    Files.copy(jar, new File(modsDir, jar.getName()));
+                } catch (IOException e) {
+                    throw new RuntimeException("Failed to copy mod jar", e);
+                }
+            }
+        });
+
+        JavaExec clientTask = makeTask("runClient", JavaExec.class);
+        {
+            clientTask.setGroup("ForgeGradle");
+            clientTask.setDescription("Runs the Minecraft client");
+            clientTask.dependsOn("setupDevWorkspace", copyTask);
+            clientTask.setMain("net.minecraft.launchwrapper.Launch");
+            clientTask.doFirst(new Action<Task>() {
+                @Override
+                public void execute(Task task)
+                {
+                    String nativesPath;
+                    if (isMacOSArm64())
+                    {
+                        try
+                        {
+                            nativesPath = getNativesMacOSArm64().getAbsolutePath();
+                        }
+                        catch (Exception e)
+                        {
+                            throw new RuntimeException("Failed to get arm64 natives", e);
+                        }
+                    }
+                    else
+                    {
+                        nativesPath = delayedFile(NATIVES_DIR).call().getAbsolutePath();
+                    }
+                    JavaExec t = (JavaExec) task;
+                    FileCollection cp = project.getConfigurations().getByName(CONFIG);
+                    if (isMacOSArm64())
+                    {
+                        try
+                        {
+                            File lwjglDir = new File(project.getBuildDir(), "lwjgl-arm64");
+                            lwjglDir.mkdirs();
+                            File lwjglJar = new File(lwjglDir, "lwjgl.jar");
+                            File lwjglUtilJar = new File(lwjglDir, "lwjgl_util.jar");
+                            if (!lwjglJar.exists())
+                                try (InputStream in = downloadRedirect("https://libraries.minecraft.net/org/lwjgl/lwjgl/lwjgl/2.9.4-nightly-20150209/lwjgl-2.9.4-nightly-20150209.jar"); FileOutputStream fos = new FileOutputStream(lwjglJar)) { ByteStreams.copy(in, fos); }
+                            if (!lwjglUtilJar.exists())
+                                try (InputStream in = downloadRedirect("https://libraries.minecraft.net/org/lwjgl/lwjgl/lwjgl_util/2.9.4-nightly-20150209/lwjgl_util-2.9.4-nightly-20150209.jar"); FileOutputStream fos = new FileOutputStream(lwjglUtilJar)) { ByteStreams.copy(in, fos); }
+                            cp = cp.filter(f -> !f.getName().startsWith("lwjgl-2.9") && !f.getName().startsWith("lwjgl_util-2.9"));
+                            cp = cp.plus(project.files(lwjglJar, lwjglUtilJar));
+                        }
+                        catch (Exception e)
+                        {
+                            throw new RuntimeException("Failed to download arm64 LWJGL jars", e);
+                        }
+                    }
+                    t.setClasspath(cp);
+                    t.setArgs(Arrays.asList(
+                        "--version", getExtension().getVersion().split("-")[0],
+                        "--tweakClass", "cpw.mods.fml.common.launcher.FMLTweaker",
+                        "--username", "Dev"
+                    ));
+                    t.jvmArgs(
+                        "-Xmx1G",
+                        "-Dfml.coreMods.load=",
+                        "-Dfml.ignoreInvalidMinecraftCertificates=true",
+                        "-Dapple.awt.application.appearance=system",
+                        "-Djava.library.path=" + nativesPath
+                    );
+                    t.setWorkingDir(delayedFile("{ASSET_DIR}").call().getParentFile());
+                }
+            });
+        }
+
+        JavaExec serverTask = makeTask("runServer", JavaExec.class);
+        {
+            serverTask.setGroup("ForgeGradle");
+            serverTask.setDescription("Runs the Minecraft server");
+            serverTask.dependsOn("setupDevWorkspace", copyTask);
+            serverTask.setMain("cpw.mods.fml.relauncher.ServerLaunchWrapper");
+            serverTask.doFirst(new Action<Task>() {
+                @Override
+                public void execute(Task task)
+                {
+                    JavaExec t = (JavaExec) task;
+                    t.setClasspath(project.getConfigurations().getByName(CONFIG));
+                    t.jvmArgs("-Xmx1G", "-Dfml.ignoreInvalidMinecraftCertificates=true");
+                    t.setWorkingDir(delayedFile("{ASSET_DIR}").call().getParentFile());
+                }
+            });
+        }
+    }
+
+    private void patchCoreModManager(File jar) throws Exception
+    {
+        ClassPool pool = ClassPool.getDefault();
+        pool.insertClassPath(jar.getAbsolutePath());
+
+        CtClass coreModManager = pool.get("cpw.mods.fml.relauncher.CoreModManager");
+
+        // add safe sort method
+        coreModManager.addMethod(CtNewMethod.make(
+            "private static void sort(java.util.List list, java.util.Comparator c)" +
+            "{" +
+            "    Object[] a = list.toArray();" +
+            "    java.util.Arrays.sort(a, c);" +
+            "    for (int i = 0; i < a.length; i++)" +
+            "            list.set(i, a[i]);" +
+            "}", coreModManager));
+
+        // patch sortTweakList to use safe sort instead of Collections.sort
+        CtMethod sortTweakList = coreModManager.getDeclaredMethod("sortTweakList");
+        sortTweakList.instrument(new ExprEditor() {
+            public void edit(MethodCall m) throws CannotCompileException {
+                if (m.getMethodName().equals("sort") && m.getClassName().equals("java.util.Collections"))
+                    m.replace("cpw.mods.fml.relauncher.CoreModManager.sort($1, $2);");
+            }
+        });
+
+        String tmp = jar.getAbsolutePath() + ".tmp";
+
+        // write patched class back into jar
+        try (
+            JarFile in = new JarFile(jar);
+            FileOutputStream fos = new FileOutputStream(tmp);
+            JarOutputStream out = new JarOutputStream(fos)
+        ) {
+            byte[] patched = coreModManager.toBytecode();
+            Enumeration<JarEntry> entries = in.entries();
+            while (entries.hasMoreElements())
+            {
+                JarEntry entry = entries.nextElement();
+                out.putNextEntry(new JarEntry(entry.getName()));
+                if (entry.getName().equals("cpw/mods/fml/relauncher/CoreModManager.class"))
+                    out.write(patched);
+                else
+                    ByteStreams.copy(in.getInputStream(entry), out);
+                out.closeEntry();
+            }
+        }
+
+        // replace original jar
+        Files.move(
+            new File(tmp),
+            jar
+        );
+    }
+
+    private File getNativesMacOSArm64() throws Exception
+    {
+        File nativesDir = new File(delayedFile(NATIVES_DIR_ARM64).call().getAbsolutePath());
+        if (nativesDir.exists() && nativesDir.list().length > 0)
+            return nativesDir;
+        nativesDir.mkdirs();
+
+        downloadJarZip("https://github.com/MinecraftMachina/lwjgl/releases/download/2.9.4-20150209-mmachina.2/lwjgl-platform-2.9.4-nightly-20150209-natives-osx.jar", nativesDir);
+        downloadJarZip("https://github.com/r58Playz/jinput-m1/raw/main/plugins/OSX/bin/jinput-platform-2.0.5.jar", nativesDir);
+
+        return nativesDir;
+    }
+
+    private boolean isMacOSArm64()
+    {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String arch = System.getProperty("os.arch", "").toLowerCase();
+        return 
+            os.contains("mac") &&
+            (
+                arch.equals("aarch64") ||
+                arch.equals("arm64")
+            );
+    }
+
+    private void downloadJarZip(String url, File destDir) throws Exception
+    {
+        File tmp = new File(destDir, "tmp-download.jar");
+        try (InputStream in = downloadRedirect(url); FileOutputStream fos = new FileOutputStream(tmp))
+        {
+            ByteStreams.copy(in, fos);
+        }
+        try (JarFile jf = new JarFile(tmp))
+        {
+            Enumeration<JarEntry> entries = jf.entries();
+            while (entries.hasMoreElements())
+            {
+                JarEntry entry = entries.nextElement();
+                if (entry.isDirectory()) continue;
+                if (entry.getName().startsWith("META-INF")) continue;
+                File out = new File(destDir, entry.getName());
+                out.getParentFile().mkdirs();
+                try (InputStream is = jf.getInputStream(entry); FileOutputStream fos = new FileOutputStream(out))
+                {
+                    ByteStreams.copy(is, fos);
+                }
+            }
+        }
+        tmp.delete();
+    }
+
+    private InputStream downloadRedirect(String url) throws Exception
+    {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setInstanceFollowRedirects(true);
+        conn.setConnectTimeout(30000);
+        conn.setReadTimeout(60000);
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+
+        int code = conn.getResponseCode();
+        if (
+            code == HTTP_MOVED_TEMP ||
+            code == HTTP_MOVED_PERM ||
+            code == 307 ||
+            code == 308
+        ) {
+            String newUrl = conn.getHeaderField("Location");
+            conn.disconnect();
+            return downloadRedirect(newUrl);
+        }
+
+        return conn.getInputStream();
     }
 
     protected Class<UserExtension> getExtensionClass()
@@ -221,6 +480,24 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
             deobfBinTask.dependsOn("downloadMcpTools", "mergeJars", "genSrgs");
             deobfBinTask.dependsOn(binTask);
         }
+
+        DefaultTask patchTask = makeTask("patchForgeJava8", DefaultTask.class);
+        patchTask.dependsOn("deobfBinJar");
+        patchTask.doLast(new Action<Task>() {
+            @Override
+            public void execute(Task task)
+            {
+                try
+                {
+                    File jar = ((ProcessJarTask) project.getTasks().getByName("deobfBinJar")).getOutJar();
+                    patchCoreModManager(jar);
+                }
+                catch (Exception e)
+                {
+                    throw new RuntimeException("Failed to patch CoreModManager", e);
+                }
+            }
+        });
 
         ProcessJarTask deobfTask = makeTask("deobfuscateJar", ProcessJarTask.class);
         {
@@ -310,7 +587,7 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
         extractNatives.dependsOn("extractUserDev");
         
         // extra libs folder.
-        project.getDependencies().add("compile", project.fileTree("libs"));
+        project.getDependencies().add("implementation", project.fileTree("libs"));
     }
 
     protected void configureCompilation()
@@ -318,7 +595,7 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
         Configuration config = project.getConfigurations().getByName(CONFIG);
 
         Javadoc javadoc = (Javadoc) project.getTasks().getByName("javadoc");
-        javadoc.getClasspath().add(config);
+        javadoc.setClasspath(javadoc.getClasspath().plus(config));
 
         // get conventions
         JavaPluginConvention javaConv = (JavaPluginConvention) project.getConvention().getPlugins().get("java");
@@ -409,7 +686,7 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
 
         eclipseConv.getClasspath().setDownloadJavadoc(true);
         eclipseConv.getClasspath().setDownloadSources(true);
-        ((ActionBroadcast<Classpath>) eclipseConv.getClasspath().getFile().getWhenMerged()).add(new Action<Classpath>()
+        eclipseConv.getClasspath().getFile().whenMerged(new Action<Classpath>()
         {
             @Override
             public void execute(Classpath classpath)
@@ -829,7 +1106,7 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
 
         // link sources and javadocs eclipse
         EclipseModel eclipseConv = (EclipseModel) project.getExtensions().getByName("eclipse");
-        ((ActionBroadcast<Classpath>) eclipseConv.getClasspath().getFile().getWhenMerged()).add(new Action<Classpath>()
+        eclipseConv.getClasspath().getFile().whenMerged(new Action<Classpath>()
         {
             FileReferenceFactory factory = new FileReferenceFactory();
 
@@ -853,7 +1130,7 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
 
         // link sources and javadocs ntellij idea
         IdeaModel ideaConv = (IdeaModel) project.getExtensions().getByName("idea");
-        ((ActionBroadcast<Module>) ideaConv.getModule().getIml().getWhenMerged()).add(new Action<Module>() {
+        ideaConv.getModule().getIml().whenMerged(new Action<Module>() {
 
             PathFactory factory = new PathFactory();
 
@@ -885,14 +1162,13 @@ public abstract class UserBasePlugin extends BasePlugin<UserExtension>
         Configuration config = project.getConfigurations().getByName(CONFIG);
 
         Javadoc javadoc = (Javadoc) project.getTasks().getByName("javadoc");
-        javadoc.getClasspath().add(config);
+        javadoc.setClasspath(javadoc.getClasspath().plus(config));
 
         // get conventions
         JavaPluginConvention javaConv = (JavaPluginConvention) project.getConvention().getPlugins().get("java");
         SourceSet main = javaConv.getSourceSets().getByName(SourceSet.MAIN_SOURCE_SET_NAME);
 
-        main.getCompileConfigurationName();
-        Configuration compileConfig = project.getConfigurations().getByName(main.getCompileConfigurationName());
+        Configuration compileConfig = project.getConfigurations().getByName(main.getCompileClasspathConfigurationName());
 
         compileConfig.extendsFrom(config);
     }

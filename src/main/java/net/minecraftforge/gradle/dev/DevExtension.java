@@ -1,11 +1,10 @@
 package net.minecraftforge.gradle.dev;
 
-import groovy.lang.Closure;
-import net.minecraftforge.gradle.common.BaseExtension;
-
 import org.gradle.api.Action;
 import org.gradle.api.Project;
-import org.gradle.api.internal.ClosureBackedAction;
+
+import groovy.lang.Closure;
+import net.minecraftforge.gradle.common.BaseExtension;
 
 public class DevExtension extends BaseExtension
 {
@@ -97,7 +96,7 @@ public class DevExtension extends BaseExtension
     @SuppressWarnings("rawtypes")
     public void subprojects(Closure subprojects)
     {
-        this.subprojects = new ClosureBackedAction<Project>(subprojects);
+        this.subprojects = project -> subprojects.call(project);
     }
 
     public Action<Project> getCleanProject()
@@ -113,7 +112,7 @@ public class DevExtension extends BaseExtension
     @SuppressWarnings("rawtypes")
     public void cleanProject(Closure subprojects)
     {
-        this.cleanProject = new ClosureBackedAction<Project>(subprojects);
+        this.cleanProject = project -> subprojects.call(project);
     }
 
     public Action<Project> getDirtyProject()
@@ -129,6 +128,6 @@ public class DevExtension extends BaseExtension
     @SuppressWarnings("rawtypes")
     public void dirtyProject(Closure subprojects)
     {
-        this.dirtyProject = new ClosureBackedAction<Project>(subprojects);
+        this.dirtyProject = project -> subprojects.call(project);
     }
 }

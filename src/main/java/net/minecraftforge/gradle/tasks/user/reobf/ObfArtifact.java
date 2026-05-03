@@ -423,4 +423,10 @@ public class ObfArtifact extends AbstractPublishArtifact
         
         Files.write(Joiner.on(Constants.NEWLINE).join(lines), script, Charset.defaultCharset());
     }
+
+    @Override
+    public boolean shouldBePublished()
+    {
+        return true;
+    }
 }

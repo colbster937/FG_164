@@ -95,7 +95,7 @@ public class ObfuscateTask extends DefaultTask
         if (!task.getState().getExecuted())
         {
             getLogger().lifecycle(task.getPath());
-            task.execute();
+            task.getActions().forEach(a -> a.execute(task));
         }
     }
 

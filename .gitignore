@@ -2,6 +2,9 @@
 .gradle
 build
 gradle-app.setting
+gradlew
+gradlew.bat
+gradle/wrapper/gradle-wrapper.jar
 
 # GMCP plugin
 /minecraft

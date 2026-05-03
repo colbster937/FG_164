@@ -46,7 +46,7 @@ public class FileLogListenner implements StandardOutputListener, BuildListener
     
     @Override
     public void projectsLoaded(Gradle arg0) {}
-    
+
     @Override
     public void buildStarted(Gradle arg0) {}
 

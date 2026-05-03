@@ -4,6 +4,9 @@ import groovy.lang.Closure;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.HashMap;
 
 import net.minecraftforge.gradle.FileLogListenner;
@@ -28,7 +31,10 @@ import org.gradle.api.tasks.Delete;
 import org.gradle.testfixtures.ProjectBuilder;
 
 import com.google.common.base.Throwables;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonIOException;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 
 public abstract class BasePlugin<K extends BaseExtension> implements Plugin<Project>, IDelayedResolver<K>
@@ -36,6 +42,9 @@ public abstract class BasePlugin<K extends BaseExtension> implements Plugin<Proj
     public Project    project;
     public Version    version;
     public AssetIndex assetIndex;
+
+    private String assetIndexUrl = null;
+    private String assetIndexId = null;
 
     @Override
     public final void apply(Project arg)
@@ -63,7 +72,15 @@ public abstract class BasePlugin<K extends BaseExtension> implements Plugin<Proj
             @Override
             public void execute(Project proj)
             {
-                addMavenRepo(proj, "forge", "http://files.minecraftforge.net/maven");
+                proj.getRepositories().ivy(repo -> {
+                    repo.setName("forge");
+                    repo.setUrl("https://files.minecraftforge.net/maven");
+                    repo.patternLayout(layout -> {
+                        layout.artifact("[orgPath]/[module]/[revision]/[module]-[revision]-[classifier].[ext]");
+                        layout.artifact("[orgPath]/[module]/[revision]/[module]-[revision].[ext]");
+                    });
+                    repo.metadataSources(sources -> sources.artifact());
+                });
                 proj.getRepositories().mavenCentral();
                 addMavenRepo(proj, "minecraft", Constants.LIBRARY_URL);
             }
@@ -109,6 +126,7 @@ public abstract class BasePlugin<K extends BaseExtension> implements Plugin<Proj
 
     public void afterEvaluate()
     {
+        fetchMinecraftInfo(getExtension().getVersion(), getExtension());
         if (!displayBanner)
             return;
         project.getLogger().lifecycle("****************************");
@@ -119,6 +137,54 @@ public abstract class BasePlugin<K extends BaseExtension> implements Plugin<Proj
         project.getLogger().lifecycle(delayedString(" MCP Data version : {MCP_VERSION}").call());
         project.getLogger().lifecycle("****************************");
         displayBanner = false;
+    }
+
+    private void fetchMinecraftInfo(String mcVersion, BaseExtension exten)
+    {
+        try
+        {
+            // fetch version manifest
+            URL manifestUrl = new URL(Constants.MC_MANIFEST_URL);
+            HttpURLConnection conn = (HttpURLConnection) manifestUrl.openConnection();
+            JsonObject manifest = new JsonParser().parse(new InputStreamReader(conn.getInputStream())).getAsJsonObject();
+
+            // find version metadata url
+            String versionUrl = null;
+            for (JsonElement e : manifest.getAsJsonArray("versions"))
+            {
+                JsonObject v = e.getAsJsonObject();
+                if (mcVersion.equals(v.get("id").getAsString()))
+                {
+                    versionUrl = v.get("url").getAsString();
+                    break;
+                }
+            }
+
+            if (versionUrl == null)
+                throw new RuntimeException("Could not find version " + mcVersion + " in manifest!");
+
+            // fetch version json
+            URL vUrl = new URL(versionUrl);
+            HttpURLConnection vConn = (HttpURLConnection) vUrl.openConnection();
+            JsonObject vJson = new JsonParser().parse(new InputStreamReader(vConn.getInputStream())).getAsJsonObject();
+
+            JsonObject downloads = vJson.getAsJsonObject("downloads");
+            String clientHash = downloads.getAsJsonObject("client").get("sha1").getAsString();
+            String serverHash = downloads.getAsJsonObject("server").get("sha1").getAsString();
+
+            if (exten.getClientHash().equals("null"))
+                exten.setClientHash(clientHash);
+            if (exten.getServerHash().equals("null"))
+                exten.setServerHash(serverHash);
+
+            JsonObject assetIndexObj = vJson.getAsJsonObject("assetIndex");
+            assetIndexUrl = assetIndexObj.get("url").getAsString();
+            assetIndexId = assetIndexObj.get("id").getAsString();
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException("Failed to fetch Minecraft info: " + e.getMessage(), e);
+        }
     }
     
     public void finalCall() {}
@@ -301,8 +367,13 @@ public abstract class BasePlugin<K extends BaseExtension> implements Plugin<Proj
     @Override
     public String resolve(String pattern, Project project, K exten)
     {
-        if (version != null)
+        if (assetIndexId != null)
+            pattern = pattern.replace("{ASSET_INDEX}", assetIndexId);
+        else if (version != null)
             pattern = pattern.replace("{ASSET_INDEX}", version.getAssets());
+        pattern = pattern.replace("{ASSET_INDEX_URL}", assetIndexUrl != null ? assetIndexUrl : "");
+        pattern = pattern.replace("{CLIENT_HASH}", exten.getClientHash() != null ? exten.getClientHash() : "");
+        pattern = pattern.replace("{SERVER_HASH}", exten.getServerHash() != null ? exten.getServerHash() : "");
         return pattern;
     }
 

@@ -36,8 +36,10 @@ import org.gradle.api.UncheckedIOException;
 import org.gradle.api.file.FileVisitDetails;
 import org.gradle.api.file.FileVisitor;
 import org.gradle.api.file.RelativePath;
+import org.gradle.api.internal.file.FileCollectionStructureVisitor;
+import org.gradle.api.internal.file.FileTreeInternal;
 import org.gradle.api.internal.file.collections.MinimalFileTree;
-import org.gradle.util.DeprecationLogger;
+import org.gradle.api.tasks.util.PatternSet;
 import org.gradle.util.GFileUtils;
 
 public class ZipFileTree implements MinimalFileTree
@@ -56,13 +58,6 @@ public class ZipFileTree implements MinimalFileTree
 
     public void visit(FileVisitor visitor)
     {
-        if (!zipFile.exists())
-        {
-            DeprecationLogger.nagUserOfDeprecatedBehaviour(
-                    String.format("The specified zip file %s does not exist and will be silently ignored", getDisplayName())
-                    );
-            return;
-        }
         if (!zipFile.isFile())
         {
             throw new InvalidUserDataException(String.format("Cannot expand %s as it is not a file.", getDisplayName()));
@@ -263,5 +258,11 @@ public class ZipFileTree implements MinimalFileTree
         {
             return ((isDirectory()) ? 493 : 420);
         }
+    }
+    
+    @Override
+    public void visitStructure(FileCollectionStructureVisitor visitor, FileTreeInternal owner)
+    {
+        visitor.visitFileTree(zipFile, new PatternSet(), owner);
     }
 }
